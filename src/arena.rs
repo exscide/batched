@@ -80,28 +80,9 @@ impl<const BLOCK_SIZE: usize> Arena<BLOCK_SIZE> {
 		}
 	}
 
-	/// Allocate a new value within the Arena and return a [Ref] to it.
-	/// 
-	/// When the current block is full and there is no free block left,
-	/// a new one will be allocated.
-	pub fn alloc<T>(&mut self, val: T) -> Ref<T> {
-		let layout = std::alloc::Layout::for_value(&val);
-
-		if std::mem::size_of::<T>() >= BLOCK_SIZE {
-			// allocate a personal block for val if its type needs more space than blocks can provide
-
-			let block = unsafe { std::alloc::alloc(layout) };
-
-			// SAFETY: we've just allocated space
-			unsafe { std::ptr::copy_nonoverlapping(&val, block as *mut T, 1) };
-
-			// insert it so that it is the second to last one
-			self.blocks.insert(self.blocks.len()-1, (layout, block));
-			self.cur_block += 1;
-
-			return Ref::new(self.arena_id, std::ptr::NonNull::new(block as *mut T).unwrap());
-		}
-
+	/// Ensure there is enough space within the current block for the given layout.
+	/// If not, allocate a new one.
+	fn make_space_for_layout(&mut self, layout: std::alloc::Layout) -> *mut u8 {
 		let (cur_block, align_offset) = {
 			// ensure space within the current block or allocate a new one
 
@@ -129,26 +110,106 @@ impl<const BLOCK_SIZE: usize> Arena<BLOCK_SIZE> {
 			}
 		};
 
-
 		// TODO: ensure safety
-		let ptr = unsafe { cur_block.add(self.offset).add(align_offset) } as *mut T;
+		let ptr = unsafe { cur_block.add(self.offset).add(align_offset) };
+
+		// increase the current blocks offset for the next call to this function
+		self.offset += align_offset + layout.size();
+
+		ptr
+	}
+
+	/// Unsafely allocate space and memcpy val into the arena.
+	unsafe fn alloc_memcpy<T>(&mut self, val: &T) -> Ref<T> {
+		let layout = std::alloc::Layout::for_value(val);
+
+		if layout.size() >= BLOCK_SIZE {
+			// allocate a personal block for val if its type needs more space than blocks can provide
+
+			let block = unsafe { std::alloc::alloc(layout) };
+
+			// SAFETY: we've just allocated space
+			unsafe { std::ptr::copy_nonoverlapping(val, block as *mut T, 1) };
+
+			// insert the new block so that it is the second to last one
+			self.blocks.insert(self.blocks.len()-1, (layout, block));
+
+			self.cur_block += 1;
+
+			return Ref::new(self.arena_id, std::ptr::NonNull::new(block as *mut T).unwrap());
+		}
+
+		let ptr = self.make_space_for_layout(layout) as *mut T;
 
 		// SAFETY:
 		// - there's enough space in the block for the type
 		// - the pointer is aligned
-		unsafe { std::ptr::copy_nonoverlapping(&val, ptr, 1) };
-
-		// TODO: ensure safety
-		self.offset += align_offset + layout.size();
+		unsafe { std::ptr::copy_nonoverlapping(val, ptr, 1) };
 
 		// SAFETY: the pointer is ensured not to be null when allocating the block in [alloc_block]
 		Ref::new(self.arena_id, unsafe { std::ptr::NonNull::new_unchecked(ptr) })
 	}
 
+	/// Allocate a [str] within the Arena and return a [Ref] to it.
+	pub fn alloc_str(&mut self, val: &str) -> Ref<str> {
+		let val = val.as_bytes();
+
+		let layout = std::alloc::Layout::for_value(val);
+
+		if layout.size() >= BLOCK_SIZE {
+			// allocate a personal block for val if its type needs more space than blocks can provide
+
+			let block = unsafe { std::alloc::alloc(layout) };
+
+			// SAFETY: we've just allocated space
+			unsafe { std::ptr::copy_nonoverlapping(val.as_ptr(), block, val.len()) };
+
+			// insert the new block so that it is the second to last one
+			self.blocks.insert(self.blocks.len()-1, (layout, block));
+
+			self.cur_block += 1;
+
+			// SAFETY: we're just casting the previously copied val from the arena back to its original form
+			let s = unsafe { std::str::from_utf8_unchecked_mut(std::slice::from_raw_parts_mut(block, val.len())) };
+
+			return Ref::new(self.arena_id, std::ptr::NonNull::new(s as *mut str).unwrap());
+		}
+
+		let ptr = self.make_space_for_layout(layout) as *mut u8;
+
+		// SAFETY:
+		// - there's enough space in the block for the type
+		// - the pointer is aligned
+		unsafe { std::ptr::copy_nonoverlapping(val.as_ptr(), ptr, val.len()) };
+
+		// SAFETY: we're just casting the previously copied val from the arena back to its original form
+		let s = unsafe { std::str::from_utf8_unchecked_mut(std::slice::from_raw_parts_mut(ptr, val.len())) };
+
+		// SAFETY: the pointer is ensured not to be null when allocating the block in [alloc_block]
+		Ref::new(self.arena_id, unsafe { std::ptr::NonNull::new_unchecked(s as *mut str) })
+	}
+
+	/// Allocate a new value within the Arena and return a [Ref] to it.
+	/// 
+	/// When the current block is full and there is no free block left,
+	/// a new one will be allocated.
+	pub fn alloc<T: 'static>(&mut self, val: T) -> Ref<T> {
+
+		// SAFETY:
+		// - we're owning val
+		// - val cannot contain any non-static references
+		// - we're not dropping val since it's been moved to the arena
+		let r = unsafe { self.alloc_memcpy(&val) };
+
+		std::mem::forget(val);
+
+		r
+	}
+
 	/// Get a reference to a value within the Arena.
 	/// 
 	/// Returns [None] when the value is invalid (Arena has been cleared, does not belong to this Arena).
-	pub fn get<T>(&self, r: Ref<T>) -> Option<&T> {
+	pub fn get<T: ?Sized>(&self, r: Ref<T>) -> Option<&T> {
 		if r.arena_id != self.arena_id {
 			return None;
 		}
@@ -160,7 +221,7 @@ impl<const BLOCK_SIZE: usize> Arena<BLOCK_SIZE> {
 	/// Get a mutable reference to a value within the Arena.
 	/// 
 	/// Returns [None] when the value is invalid (Arena has been cleared, does not belong to this Arena).
-	pub fn get_mut<T>(&mut self, mut r: Ref<T>) -> Option<&mut T> {
+	pub fn get_mut<T: ?Sized>(&mut self, mut r: Ref<T>) -> Option<&mut T> {
 		if r.arena_id != self.arena_id {
 			return None;
 		}
@@ -196,7 +257,7 @@ pub struct Ref<T: ?Sized> {
 }
 
 impl<T: ?Sized> Ref<T> {
-	pub(self) fn new(arena_id: u32, ptr: std::ptr::NonNull<T>) -> Self {
+	pub fn new(arena_id: u32, ptr: std::ptr::NonNull<T>) -> Self {
 		Self {
 			arena_id, ptr
 		}
@@ -318,4 +379,35 @@ mod test {
 
 	// TODO: make it Send + Sync ?
 	fn test_auto_traits<T: Unpin>() {}
+
+
+	#[test]
+	fn test_arena_str() {
+		let mut arena = Arena::<16>::new();
+
+		let r = arena.alloc_str("yote");
+		assert_eq!(arena.get(r), Some("yote"));
+		assert_eq!(arena.offset, 4);
+
+		let x = arena.alloc_str("yöte");
+		assert_eq!(arena.get(x), Some("yöte"));
+		assert_eq!(arena.offset, 9);
+
+
+		let a = arena.alloc_str("123456");
+		assert_eq!(arena.get(a), Some("123456"));
+		assert_eq!(arena.offset, 15);
+
+		let b = arena.alloc_str("1234");
+		assert_eq!(arena.get(b), Some("1234"));
+		assert_eq!(arena.offset, 4);
+
+		let c = arena.alloc_str("3");
+		let d = arena.alloc_str("4");
+		assert_eq!(arena.get(c), Some("3"));
+		assert_eq!(arena.get(d), Some("4"));
+		assert_eq!(arena.offset, 6);
+
+
+	}
 }
