@@ -8,7 +8,7 @@
 /// 
 /// Currently does not drop its values.
 pub struct Arena<const BLOCK_SIZE: usize = 1024> {
-	arena_id: u32,
+	arena_id: usize,
 	blocks: Vec<(std::alloc::Layout, *mut u8)>,
 	cur_block: usize,
 	offset: usize,
@@ -24,7 +24,7 @@ impl<const BLOCK_SIZE: usize> Arena<BLOCK_SIZE> {
 	}
 
 	fn _new() -> Self {
-		static ARENA_IDX: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+		static ARENA_IDX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 		let arena = Self {
 			arena_id: ARENA_IDX.load(std::sync::atomic::Ordering::Relaxed),
@@ -73,11 +73,12 @@ impl<const BLOCK_SIZE: usize> Arena<BLOCK_SIZE> {
 	/// Move to the next block, allocate a new block if needed.
 	fn next_block(&mut self) {
 		self.cur_block += 1;
-		self.offset = 0;
 
 		if self.blocks.get(self.cur_block).is_none() {
 			self.alloc_block();
 		}
+
+		self.offset = 0;
 	}
 
 	/// Ensure there is enough space within the current block for the given layout.
@@ -252,12 +253,12 @@ impl<const BLOCK_SIZE: usize> Drop for Arena<BLOCK_SIZE> {
 /// A reference into an [Arena].
 #[derive(Debug)]
 pub struct Ref<T: ?Sized> {
-	arena_id: u32,
+	arena_id: usize,
 	ptr: std::ptr::NonNull<T>,
 }
 
 impl<T: ?Sized> Ref<T> {
-	pub fn new(arena_id: u32, ptr: std::ptr::NonNull<T>) -> Self {
+	pub fn new(arena_id: usize, ptr: std::ptr::NonNull<T>) -> Self {
 		Self {
 			arena_id, ptr
 		}
@@ -284,6 +285,16 @@ impl<T: ?Sized> Ref<T> {
 	pub unsafe fn get_mut_unchecked(&mut self) -> &mut T {
 		self.ptr.as_mut()
 	}
+
+	/// Get the id of the [Arena] this refers to.
+	pub fn arena_id(&self) -> usize {
+		self.arena_id
+	}
+
+	/// Get the [std::ptr::NonNull] pointer this points to.
+	pub fn as_ptr(&self) -> std::ptr::NonNull<T> {
+		self.ptr
+	}
 }
 
 
@@ -305,7 +316,7 @@ impl<T: ?Sized> Eq for Ref<T> {}
 
 impl<T: ?Sized> std::hash::Hash for Ref<T> {
 	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-		state.write_u32(self.arena_id);
+		state.write_usize(self.arena_id);
 		state.write_usize(self.ptr.as_ptr() as *mut () as usize);
 	}
 }
