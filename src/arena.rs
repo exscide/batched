@@ -4,6 +4,9 @@
 //! The returned [Ref]s can be accessed using [Arena::get] and [Arena::get_mut].
 
 
+use crate::*;
+
+
 /// A typeless, lifetimeless arena allocator that owns its values.
 /// 
 /// Currently does not drop its values.
@@ -24,16 +27,12 @@ impl<const BLOCK_SIZE: usize> Arena<BLOCK_SIZE> {
 	}
 
 	fn _new() -> Self {
-		static ARENA_IDX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
 		let arena = Self {
-			arena_id: ARENA_IDX.load(std::sync::atomic::Ordering::Relaxed),
+			arena_id: usize_counter(),
 			blocks: Vec::new(),
 			cur_block: 0,
 			offset: 0,
 		};
-
-		ARENA_IDX.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
 		arena
 	}
@@ -211,7 +210,7 @@ impl<const BLOCK_SIZE: usize> Arena<BLOCK_SIZE> {
 	/// 
 	/// Returns [None] when the value is invalid (Arena has been cleared, does not belong to this Arena).
 	pub fn get<T: ?Sized>(&self, r: Ref<T>) -> Option<&T> {
-		if r.arena_id != self.arena_id {
+		if r.id != self.arena_id {
 			return None;
 		}
 
@@ -223,7 +222,7 @@ impl<const BLOCK_SIZE: usize> Arena<BLOCK_SIZE> {
 	/// 
 	/// Returns [None] when the value is invalid (Arena has been cleared, does not belong to this Arena).
 	pub fn get_mut<T: ?Sized>(&mut self, mut r: Ref<T>) -> Option<&mut T> {
-		if r.arena_id != self.arena_id {
+		if r.id != self.arena_id {
 			return None;
 		}
 
@@ -248,81 +247,6 @@ impl<const BLOCK_SIZE: usize> Drop for Arena<BLOCK_SIZE> {
 		}
 	}
 }
-
-
-/// A reference into an [Arena].
-#[derive(Debug)]
-pub struct Ref<T: ?Sized> {
-	arena_id: usize,
-	ptr: std::ptr::NonNull<T>,
-}
-
-impl<T: ?Sized> Ref<T> {
-	pub fn new(arena_id: usize, ptr: std::ptr::NonNull<T>) -> Self {
-		Self {
-			arena_id, ptr
-		}
-	}
-
-	/// Get a reference to the value, bypassing all checks.
-	/// 
-	/// Use with caution. For a safe variation, see: [Arena::get]
-	/// 
-	/// Safety:
-	/// - the [Arena] this Ref belongs to has to be alive
-	/// - there must not be any mutable reference to the same value
-	pub unsafe fn get_unchecked(&self) -> &T {
-		self.ptr.as_ref()
-	}
-
-	/// Get a mutable reference to the value, bypassing all checks.
-	/// 
-	/// Use with caution. For a safe variation, see: [Arena::get_mut]
-	/// 
-	/// Safety:
-	/// - the [Arena] this Ref belongs to has to be alive
-	/// - there must not be any mutable OR shared reference to the same value
-	pub unsafe fn get_mut_unchecked(&mut self) -> &mut T {
-		self.ptr.as_mut()
-	}
-
-	/// Get the id of the [Arena] this refers to.
-	pub fn arena_id(&self) -> usize {
-		self.arena_id
-	}
-
-	/// Get the [std::ptr::NonNull] pointer this points to.
-	pub fn as_ptr(&self) -> std::ptr::NonNull<T> {
-		self.ptr
-	}
-}
-
-
-impl<T: ?Sized> Clone for Ref<T> {
-	fn clone(&self) -> Self {
-		Ref { arena_id: self.arena_id, ptr: self.ptr }
-	}
-}
-
-impl<T: ?Sized> Copy for Ref<T> {}
-
-impl<T: ?Sized> PartialEq for Ref<T> {
-	fn eq(&self, other: &Self) -> bool {
-		self.arena_id == other.arena_id && self.ptr == other.ptr
-	}
-}
-
-impl<T: ?Sized> Eq for Ref<T> {}
-
-impl<T: ?Sized> std::hash::Hash for Ref<T> {
-	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-		state.write_usize(self.arena_id);
-		state.write_usize(self.ptr.as_ptr() as *mut () as usize);
-	}
-}
-
-// TODO: make casting work like it does for pointers (*mut T as *mut dyn Trait) if possible
-// impl<T: ?Sized, U: ?Sized> std::ops::CoerceUnsized<Ref<U>> for Ref<T> where T: std::marker::Unsize<U> {}
 
 
 #[cfg(test)]
