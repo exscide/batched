@@ -43,12 +43,37 @@ impl<T> Store<T> {
 }
 
 
-#[derive(Debug, Clone, Copy, Hash)]
+#[derive(Debug)]
 pub struct Handle<T> {
 	store_id: usize,
 	idx: usize,
 	_marker: std::marker::PhantomData<T>,
 }
+
+
+impl<T> Clone for Handle<T> {
+	fn clone(&self) -> Self {
+		Handle { store_id: self.store_id, idx: self.idx, _marker: self._marker }
+	}
+}
+
+impl<T> Copy for Handle<T> {}
+
+impl<T> PartialEq for Handle<T> {
+	fn eq(&self, other: &Self) -> bool {
+		self.store_id == other.store_id && self.idx == other.idx
+	}
+}
+
+impl<T> Eq for Handle<T> {}
+
+impl<T> std::hash::Hash for Handle<T> {
+	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+		state.write_usize(self.store_id);
+		state.write_usize(self.idx);
+	}
+}
+
 
 
 #[cfg(test)]
