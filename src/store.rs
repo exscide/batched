@@ -43,6 +43,7 @@ impl<T> Store<T> {
 }
 
 
+#[derive(Debug, Clone, Copy, Hash)]
 pub struct Handle<T> {
 	store_id: usize,
 	idx: usize,
