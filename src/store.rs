@@ -1,7 +1,5 @@
 use crate::*;
 
-use std::ptr::NonNull;
-
 
 pub struct Store<T> {
 	store_id: usize,
@@ -17,36 +15,40 @@ impl<T> Store<T> {
 		Self { store_id: usize_counter(), values: Vec::with_capacity(capacity) }
 	}
 
-	pub fn alloc(&mut self, val: T) -> Ref<T> {
+	pub fn alloc(&mut self, val: T) -> Handle<T> {
 		self.values.push(val);
 
-		Ref {
-			id: self.store_id,
-			/// Safety: we've just stored the value there, it is definitely valid
-			ptr: unsafe { NonNull::new_unchecked(self.values.last_mut().unwrap()) }
+		Handle {
+			store_id: self.store_id,
+			idx: self.values.len() - 1,
+			_marker: std::marker::PhantomData,
 		}
 	}
 
-	pub fn get(&self, r: Ref<T>) -> Option<&T> {
-		if r.id != self.store_id {
+	pub fn get(&self, r: Handle<T>) -> Option<&T> {
+		if r.store_id != self.store_id {
 			return None;
 		}
 
-		// SAFETY: as long as the id is equal, the memory pointed to has not been deallocated
-		// and we're borrowing the store, so there cannot be any shared reference to T
-		Some(unsafe { r.ptr.as_ref() })
+		Some(&self.values[r.idx])
 	}
 
-	pub fn get_mut(&mut self, mut r: Ref<T>) -> Option<&mut T> {
-		if r.id != self.store_id {
+	pub fn get_mut(&mut self, r: Handle<T>) -> Option<&mut T> {
+		if r.store_id != self.store_id {
 			return None;
 		}
 
-		// SAFETY: as long as the id is equal, the memory pointed to has not been deallocated
-		// and we're borrowing the store, so there cannot be any shared reference to T
-		Some(unsafe { r.ptr.as_mut() })
+		Some(&mut self.values[r.idx])
 	}
 }
+
+
+pub struct Handle<T> {
+	store_id: usize,
+	idx: usize,
+	_marker: std::marker::PhantomData<T>,
+}
+
 
 #[cfg(test)]
 mod tests {
